@@ -14,9 +14,18 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest (>=8.4.2,<9.0.0)"
+    "pytest (>=8.4.2,<9.0.0)",
+    "python-docx (>=1.1.2,<2.0.0)",
+    "pillow (>=12.0.0,<13.0.0)"
 ]
 
+[project.scripts]
+"doc-converter" = "doc_converter.cli:main"
+
+[tool.poetry]
+packages = [
+    {include = "doc_converter", from = "src"}
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
