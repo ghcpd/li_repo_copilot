@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Optional, Sequence
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -47,6 +49,7 @@ class HtmlProcessor:
     def __init__(self, inline_images: bool = False) -> None:
         self.inline_images = inline_images
         self._index = 0
+        self._base_path: Optional[Path] = None
 
     def parse_html(
         self,
@@ -54,15 +57,20 @@ class HtmlProcessor:
         *,
         source_path: str,
         metadata: DocumentMetadata | None = None,
+        base_path: Path | None = None,
     ) -> DocumentModel:
+        self._index = 0
+        self._base_path = base_path.resolve() if base_path else None
+
         soup = BeautifulSoup(html, "lxml")
         meta = metadata or self._extract_metadata(soup, source_path)
         blocks = []
 
         body = soup.body or soup
-        for node in body.children:
+        for node in list(body.children):
             blocks.extend(self._dispatch_node(node))
 
+        self._base_path = None
         return DocumentModel(metadata=meta, content=blocks)
 
     # ------------------------------------------------------------------
@@ -146,24 +154,41 @@ class HtmlProcessor:
         return ListBlock(ordered=ordered, items=items, position=position)
 
     def _parse_list_item(self, item: Tag) -> ListItem | None:
+        child_lists: list[tuple[Tag, bool]] = []
+        for child in item.find_all(["ul", "ol"], recursive=False):
+            ordered = child.name.lower() == "ol"
+            child_lists.append((child, ordered))
+
+        for child, _ in child_lists:
+            child.extract()
+
         runs = list(self._iter_runs(item))
         text = "".join(run.text for run in runs).strip()
         if not text and not runs:
             text = item.get_text(strip=True)
             runs = [TextRun(text=text)] if text else []
 
-        children = []
-        for child in item.find_all(["ul", "ol"], recursive=False):
-            sub_ordered = child.name.lower() == "ol"
-            sub_list = self._parse_list(child, sub_ordered)
+        children: list[ListItem] = []
+        child_order: Optional[bool] = None
+        for child, ordered in child_lists:
+            sub_list = self._parse_list(child, ordered)
+            if child_order is None:
+                child_order = sub_list.ordered
+            elif child_order != sub_list.ordered:
+                child_order = None
             children.extend(sub_list.items)
-            child.decompose()
 
-        if not runs:
+        if not runs and not children:
             return None
 
         position = self._next_position()
-        return ListItem(text=text, spans=runs, position=position, children=children)
+        return ListItem(
+            text=text,
+            spans=runs,
+            position=position,
+            children=children,
+            children_ordered=child_order,
+        )
 
     def _parse_table(self, table: Tag) -> TableBlock:
         rows = []
@@ -192,8 +217,18 @@ class HtmlProcessor:
         height = self._parse_int(tag.get("height"))
         mime = None
         data_b64 = None
+        resolved_source = self._resolve_source(src)
+
         if src and src.startswith("data:"):
             mime, data_b64 = self._split_data_uri(src)
+        elif self.inline_images and resolved_source and resolved_source.exists():
+            data_bytes = resolved_source.read_bytes()
+            data_b64 = base64.b64encode(data_bytes).decode("ascii")
+            mime = mimetypes.guess_type(str(resolved_source))[0]
+            src = str(resolved_source)
+        elif resolved_source and resolved_source.exists():
+            src = str(resolved_source)
+
         position = self._next_position()
         return ImageBlock(
             description=alt,
@@ -336,9 +371,11 @@ class HtmlProcessor:
         if not href:
             return False
         parsed = urlparse(href)
-        if parsed.scheme or parsed.netloc:
+        if parsed.scheme and parsed.scheme not in {"", "file"}:
             return False
-        return href.startswith("#")
+        if parsed.netloc:
+            return False
+        return True
 
     @staticmethod
     def _parse_datetime(value: str) -> datetime | None:
@@ -368,6 +405,31 @@ class HtmlProcessor:
         mime = mime_part[5:] if mime_part.startswith("data:") else None
         return mime, rest or None
 
+    def _resolve_source(self, src: str | None) -> Optional[Path]:
+        if not src:
+            return None
+
+        parsed = urlparse(src)
+        if parsed.scheme and parsed.scheme not in {"file"}:
+            return None
+
+        candidate: Optional[Path]
+        if parsed.scheme == "file":
+            candidate = Path(parsed.path)
+        else:
+            tentative = Path(src)
+            if not tentative.is_absolute() and self._base_path is not None:
+                tentative = (self._base_path / tentative).resolve()
+            candidate = tentative
+
+        try:
+            if candidate and candidate.exists():
+                return candidate
+        except OSError:
+            return None
+
+        return None
+
 
 class HtmlPlugin(FormatPlugin):
     name = "html"
@@ -384,7 +446,7 @@ class HtmlPlugin(FormatPlugin):
 
     def parse(self, path: Path) -> DocumentModel:
         html = path.read_text(encoding="utf-8", errors="ignore")
-        return self.processor.parse_html(html, source_path=str(path))
+        return self.processor.parse_html(html, source_path=str(path), base_path=path.parent)
 
 
 PLUGINS: list[HtmlPlugin] = [HtmlPlugin()]

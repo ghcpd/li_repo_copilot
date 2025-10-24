@@ -79,6 +79,12 @@ class ListItem(BaseModel):
     spans: list[TextRun]
     position: DocumentPosition
     children: list["ListItem"] = Field(default_factory=list, repr=False)
+    children_ordered: bool | None = Field(
+        default=None,
+        description=(
+            "Indicates whether child list items originate from an ordered (True), unordered (False), or mixed (None) list."
+        ),
+    )
 
 
 class ListBlock(BaseModel):
