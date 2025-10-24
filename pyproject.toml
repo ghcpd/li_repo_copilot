@@ -1,0 +1,23 @@
+[project]
+name = "doc-converter"
+version = "0.1.0"
+description = "Document converter tool"
+authors = [
+    {name = "Copilot"}
+]
+readme = "README.md"
+requires-python = "^3.12"
+dependencies = [
+    "pypandoc (>=1.15,<2.0)",
+    "pandas (>=2.3.3,<3.0.0)"
+]
+
+[dependency-groups]
+dev = [
+    "pytest (>=8.4.2,<9.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
